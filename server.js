@@ -6,6 +6,9 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import ImageKit from "imagekit";
 import multer from "multer";
+import crypto from "crypto"
+import nodemailer from "nodemailer"
+
 
 dotenv.config();
 
@@ -66,8 +69,8 @@ const userSchema = new mongoose.Schema({
   awcCode: { type: String, unique: true }, // <-- NEW
   avatar: { type: String }, // 🔹 Store ImageKit URL
   role: { type: String, enum: ["user", "admin"], default: "user" }, // ✅ added role
-
-
+  otp: String, 
+  otpExpires: Date,
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -219,7 +222,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-
     const awcCode = generateAWCCode();
 
     const user = new User({
@@ -229,30 +231,27 @@ app.post('/api/auth/register', async (req, res) => {
       lastName,
       phone,
       role: "user",
-      awcCode // assign here
+      awcCode
     });
-
     await user.save();
 
-    // Create default checking account
+    // Create default checking + savings + card
     const checkingAccount = new Account({
       userId: user._id,
       accountNumber: generateAccountNumber(),
       accountType: 'checking',
-      balance: 1000 // Initial balance
+      balance: 0
     });
     await checkingAccount.save();
 
-    // Create default savings account
     const savingsAccount = new Account({
       userId: user._id,
       accountNumber: generateAccountNumber(),
       accountType: 'savings',
-      balance: 5000 // Initial balance
+      balance: 0
     });
     await savingsAccount.save();
 
-    // Create debit card
     const debitCard = new Card({
       userId: user._id,
       accountId: checkingAccount._id,
@@ -263,42 +262,113 @@ app.post('/api/auth/register', async (req, res) => {
     });
     await debitCard.save();
 
-    const token = jwt.sign({ userId: user._id, role: user.role}, process.env.JWT_SECRET || 'banking_secret_key');
+    // Generate OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+    user.otp = otp;
+    user.otpExpires = Date.now() + 5 * 60 * 1000; // 5 min
+    await user.save();
+
+    // Send OTP email
+    const transporter = nodemailer.createTransport({
+      host: "smtp.hostinger.com",
+      secure: true,
+      port: 465,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: `"BankApp" <info@rapidcouriers.org>`,
+      to: user.email,
+      subject: "Verify Your Account - OTP",
+      text: `Welcome ${user.firstName}, your OTP code is ${otp}. It expires in 5 minutes.`,
+    });
 
     res.status(201).json({
-      token,
-      user: {
-        id: user._id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        awcCode: user.awcCode, // return it in response
-      }
+      message: "User registered. OTP sent to your email. Please verify to activate your account."
     });
   } catch (error) {
+    console.error("Register error:", error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 
-app.post('/api/auth/login', async (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    
+
     const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(400).json({ message: 'Invalid credentials' });
-    }
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Invalid credentials' });
+    if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
+
+    // generate OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+    user.otp = otp;
+    user.otpExpires = Date.now() + 5 * 60 * 1000; // 5 min expiry
+    await user.save();
+
+    // send OTP via email
+    const transporter = nodemailer.createTransport({
+      host: "smtp.hostinger.com",
+      secure: true, 
+      secureConnection: false,
+      tls: {
+        ciphers: "SSLv3",
+      },
+      requireTLS: true,
+      port: 465,
+      debug: true,
+      connectionTimeout: 10000,
+      auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+      }
+  });
+
+    await transporter.sendMail({
+      from: `"BankApp" info@rapidcouriers.org>`,
+      to: user.email,
+      subject: "Your OTP Code",
+      text: `Your OTP code is ${otp}. It will expire in 5 minutes.`,
+    });
+
+    res.json({ message: "OTP sent to your email" });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.post("/api/auth/verify-otp", async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: "User not found" });
+
+    if (user.otp !== otp || Date.now() > user.otpExpires) {
+      return res.status(400).json({ message: "Invalid or expired OTP" });
     }
 
-    const token = jwt.sign({ userId: user._id, role: user.role}, process.env.JWT_SECRET || 'banking_secret_key');
-    
+    // clear OTP
+    user.otp = null;
+    user.otpExpires = null;
+    await user.save();
+
+    // issue JWT
+    const token = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.JWT_SECRET || "banking_secret_key",
+      { expiresIn: "1h" }
+    );
+
     res.json({
+      message: "OTP verified successfully",
       token,
       user: {
         id: user._id,
@@ -307,12 +377,14 @@ app.post('/api/auth/login', async (req, res) => {
         lastName: user.lastName,
         role: user.role,
         awcCode: user.awcCode,
-      }
+      },
     });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    console.error("OTP verify error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 });
+
 
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
