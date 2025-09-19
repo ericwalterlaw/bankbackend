@@ -188,6 +188,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 function adminMiddleware(req, res, next) {
+  console.log(req.user)
   if (req.user?.role !== "admin") {
     return res.status(403).json({ message: "Access denied" });
   }
@@ -384,6 +385,46 @@ app.post("/api/auth/verify-otp", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+
+app.post("/api/auth/resend-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: "User not found" });
+
+    // generate OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+    user.otp = otp;
+    user.otpExpires = Date.now() + 5 * 60 * 1000;
+    await user.save();
+
+    // send OTP email
+    const transporter = nodemailer.createTransport({
+      host: "smtp.hostinger.com",
+      secure: true,
+      port: 465,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: `"BankApp" <info@rapidcouriers.org>`,
+      to: user.email,
+      subject: "Resend OTP Code",
+      text: `Here is your new OTP: ${otp}. It will expire in 5 minutes.`,
+    });
+
+    res.json({ message: "New OTP sent to your email" });
+  } catch (error) {
+    console.error("Resend OTP error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
 
 
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
@@ -739,7 +780,6 @@ app.get(
     try {
       // Get all users
       const users = await User.find().lean();
-
       // Get all accounts
       const accounts = await Account.find().lean();
 
