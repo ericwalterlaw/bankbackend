@@ -11,6 +11,8 @@ import { Resend } from "resend";
 
 
 dotenv.config();
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -46,6 +48,30 @@ const imagekit = new ImageKit({
   privateKey: process.env.IMAGEKIT_PRIVATE,
   urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT
 });
+
+async function sendOtpEmail({ to, firstName, otp }) {
+  try {
+    await resend.emails.send({
+      from: "BankApp <onboarding@testapp.app>", // or your verified domain
+      to,
+      subject: "Your OTP Code",
+      html: `
+        <div style="font-family: Arial, sans-serif">
+          <h2>Hello ${firstName},</h2>
+          <p>Your OTP code is:</p>
+          <h1 style="letter-spacing: 4px">${otp}</h1>
+          <p>This code expires in <strong>5 minutes</strong>.</p>
+        </div>
+      `,
+    });
+
+    return true;
+  } catch (err) {
+    console.error("Resend OTP error:", err);
+    return false;
+  }
+}
+
 
 // MongoDB connection
 mongoose.connect(process.env.MONGODB_URI)
@@ -269,23 +295,18 @@ app.post('/api/auth/register', async (req, res) => {
     user.otpExpires = Date.now() + 5 * 60 * 1000; // 5 min
     await user.save();
 
-    // Send OTP email
-    const transporter = nodemailer.createTransport({
-      host: "smtp.hostinger.com",
-      secure: true,
-      port: 465,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
+    const sent = await sendOtpEmail({
+      to: user.email,
+      firstName: user.firstName,
+      otp,
     });
 
-    await transporter.sendMail({
-      from: `"BankApp" <info@rapidcouriers.org>`,
-      to: user.email,
-      subject: "Verify Your Account - OTP",
-      text: `Welcome ${user.firstName}, your OTP code is ${otp}. It expires in 5 minutes.`,
-    });
+    if (!sent) {
+      return res.status(503).json({
+        message: "Unable to send OTP at the moment. Please try again."
+      });
+    }
+
 
     res.status(201).json({
       message: "User registered. OTP sent to your email. Please verify to activate your account."
@@ -314,29 +335,18 @@ app.post("/api/auth/login", async (req, res) => {
     await user.save();
 
     // send OTP via email
-    const transporter = nodemailer.createTransport({
-      host: "smtp.hostinger.com",
-      secure: true, 
-      secureConnection: false,
-      tls: {
-        ciphers: "SSLv3",
-      },
-      requireTLS: true,
-      port: 465,
-      debug: true,
-      connectionTimeout: 10000,
-      auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS,
-      }
-  });
+    const sent = await sendOtpEmail({
+        to: user.email,
+        firstName: user.firstName,
+        otp,
+      });
 
-    await transporter.sendMail({
-      from: `"BankApp" info@rapidcouriers.org>`,
-      to: user.email,
-      subject: "Your OTP Code",
-      text: `Your OTP code is ${otp}. It will expire in 5 minutes.`,
-    });
+      if (!sent) {
+        return res.status(503).json({
+          message: "Unable to send OTP at the moment. Please try again."
+        });
+      }
+
 
     res.json({ message: "OTP sent to your email" });
   } catch (error) {
@@ -400,22 +410,18 @@ app.post("/api/auth/resend-otp", async (req, res) => {
     await user.save();
 
     // send OTP email
-    const transporter = nodemailer.createTransport({
-      host: "smtp.hostinger.com",
-      secure: true,
-      port: 465,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-    });
+    const sent = await sendOtpEmail({
+        to: user.email,
+        firstName: user.firstName,
+        otp,
+      });
 
-    await transporter.sendMail({
-      from: `"BankApp" <info@rapidcouriers.org>`,
-      to: user.email,
-      subject: "Resend OTP Code",
-      text: `Here is your new OTP: ${otp}. It will expire in 5 minutes.`,
-    });
+      if (!sent) {
+        return res.status(503).json({
+          message: "Unable to send OTP at the moment. Please try again."
+        });
+      }
+
 
     res.json({ message: "New OTP sent to your email" });
   } catch (error) {
