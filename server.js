@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs';
 import ImageKit from "imagekit";
 import multer from "multer";
 import crypto from "crypto"
-import nodemailer from "nodemailer"
+import { Resend } from "resend";
 
 
 dotenv.config();
