@@ -52,7 +52,7 @@ const imagekit = new ImageKit({
 async function sendOtpEmail({ to, firstName, otp }) {
   try {
     await resend.emails.send({
-      from: "BankApp <onboarding@testapp.app>", // or your verified domain
+      from: "BankApp <onboarding@resend.dev>", // or your verified domain
       to,
       subject: "Your OTP Code",
       html: `
@@ -214,7 +214,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 function adminMiddleware(req, res, next) {
-  console.log(req.user)
+  
   if (req.user?.role !== "admin") {
     return res.status(403).json({ message: "Access denied" });
   }
