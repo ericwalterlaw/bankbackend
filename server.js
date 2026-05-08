@@ -94,6 +94,8 @@ const userSchema = new mongoose.Schema({
   role: { type: String, enum: ["user", "admin"], default: "user" }, // ✅ added role
   otp: String,
   otpExpires: Date,
+  transactionOtp: { type: String },
+  transactionOtpExpires: { type: Date },
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -243,7 +245,7 @@ function adminMiddleware(req, res, next) {
 // Generate account number
 const generateAccountNumber = () => {
   return (
-    "1234" +
+    "9532" +
     Math.floor(Math.random() * 100000000)
       .toString()
       .padStart(8, "0")
@@ -490,6 +492,7 @@ app.get("/api/transactions", authenticateToken, async (req, res) => {
 app.post("/api/transactions/transfer", authenticateToken, async (req, res) => {
   try {
     const {
+      otp,
       fromAccountId,
       toAccount, // for fiat transfers (account number / IBAN)
       amount,
@@ -498,8 +501,26 @@ app.post("/api/transactions/transfer", authenticateToken, async (req, res) => {
       cryptoType, // required if crypto
       recipientAddress, // required if crypto
       networkFee, // optional for crypto
-      network, // optional for crypto (Ethereum, Bitcoin, Tron, etc.)
-    } = req.body;
+      network, // optional for crypto (Ethereum, Bitcoin,
+    } = req.body; // Add otp to destructuring
+
+    const user = await User.findById(req.user.userId);
+
+    // Verify OTP
+    if (
+      !user.transactionOtp ||
+      user.transactionOtp !== otp ||
+      Date.now() > user.transactionOtpExpires
+    ) {
+      return res
+        .status(401)
+        .json({ message: "Invalid or expired security code" });
+    }
+
+    // Clear OTP after use so it can't be reused
+    user.transactionOtp = undefined;
+    user.transactionOtpExpires = undefined;
+    await user.save();
 
     // Validate sender account
     const fromAccount = await Account.findOne({
@@ -586,6 +607,39 @@ app.post("/api/transactions/transfer", authenticateToken, async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 });
+
+// POST /api/transactions/request-otp
+app.post(
+  "/api/transactions/request-otp",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const user = await User.findById(req.user.userId);
+
+      // 1. Generate a 6-digit numeric OTP
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+      // 2. Save to user with 5-minute expiry
+      user.transactionOtp = otp;
+      user.transactionOtpExpires = Date.now() + 5 * 60 * 1000;
+      await user.save();
+
+      // 3. Send via Resend
+      const sent = await sendOtpEmail({
+        to: user.email,
+        firstName: user.firstName,
+        otp,
+      });
+
+      if (!sent)
+        return res.status(500).json({ message: "Email service failed" });
+
+      res.json({ message: "OTP sent to your email" });
+    } catch (error) {
+      res.status(500).json({ message: "Error sending OTP" });
+    }
+  },
+);
 
 // Card routes
 app.get("/api/cards", authenticateToken, async (req, res) => {
